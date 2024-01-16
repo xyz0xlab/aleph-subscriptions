@@ -10,4 +10,8 @@ name = "subscription_proofs"
 path = "src/lib.rs"
 
 [dependencies]
-halo2_proofs = "0.3.0"
+anyhow = "1.0.79"
+# halo2_proofs = "0.3.0"
+# halo2 proofs compatible with aleph zero chain
+halo2_proofs = { git = "https://github.com/Cardinal-Cryptography/pse-halo2", branch = "aleph", default-features = false, features = ["mock-kzg-params"] }
+rand = "0.8.5"

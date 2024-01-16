@@ -3,7 +3,9 @@ use std::marker::PhantomData;
 use halo2_proofs::{
     arithmetic::Field,
     circuit::{Layouter, Value},
-    plonk::{Advice, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
+    plonk::{
+        Advice, Column, ConstraintSystem, Constraints, Error, Expression, Fixed, Instance, Selector,
+    },
     poly::Rotation,
 };
 
@@ -13,12 +15,25 @@ use halo2_proofs::{
 ///     [from..to)
 /// to check
 ///     (from-v)(from+1-v)..(to-1-v)
+/// We take 3 public attributes passed as vector if instances which represent:
+///     * value 0 (placeholder)
+///     * first part of account address, a subject of the proof
+///     * second part of account address, a subject of the proof
+/// Expression
+/// selector_v * (from-v)(from+1-v)..(to-1-v) + selector_i*q_i*i + instance = 0
+///     | selector_v | selector_a | v | a          | q_a | instance
+///     |          1 |          0 | x | RANGE_FROM | -1  | instance_0 (range from)
+///     |          0 |          1 | 0 | instance_1 | -1  | instance_1 (account lower bits)
+///     |          0 |          1 | 0 | instance_2 | -1  | instance_2 (account upper bits)
 
 /// Represents configuration file for `in_range` chip.
 #[derive(Debug, Clone)]
 pub struct InRangeConfig<F: Field> {
-    selector: Selector,
+    selector_v: Selector,
     value: Column<Advice>,
+    a: Column<Advice>,
+    q_a: Column<Fixed>,
+    instance: Column<Instance>,
     _marker: PhantomData<F>,
 }
 
@@ -38,12 +53,28 @@ impl<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize>
     }
 
     /// Configures gates that checks if a given witnessed value is in the [RANGE_FROM..RANGE_TO)
-    pub fn configure(meta: &mut ConstraintSystem<F>, value: Column<Advice>) -> InRangeConfig<F> {
-        let selector = meta.selector();
+    pub fn configure(
+        meta: &mut ConstraintSystem<F>,
+        value: Column<Advice>,
+        instance: Column<Instance>,
+    ) -> InRangeConfig<F> {
+        let selector_v = meta.selector();
+
+        let a = meta.advice_column();
+        let q_a = meta.fixed_column();
+
+        meta.enable_equality(value);
+        meta.enable_equality(a);
+        meta.enable_equality(q_a);
+        meta.enable_equality(instance);
 
         meta.create_gate("in range", |meta| {
-            let s = meta.query_selector(selector);
-            let v = meta.query_advice(value, Rotation::cur());
+            let selector_v = meta.query_selector(selector_v);
+            let value = meta.query_advice(value, Rotation::cur());
+
+            let a = meta.query_advice(a, Rotation::cur());
+            let q_a = meta.query_fixed(q_a, Rotation::cur());
+            let instance = meta.query_instance(instance, Rotation::cur());
 
             let in_range_exp = |range_from: usize, range_to: usize, v: Expression<F>| {
                 (range_from..range_to).fold(Expression::Constant(F::ONE), |expr, i| {
@@ -51,12 +82,21 @@ impl<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize>
                 })
             };
 
-            Constraints::with_selector(s, [("in range", in_range_exp(RANGE_FROM, RANGE_TO, v))])
+            Constraints::with_selector(
+                selector_v,
+                [(
+                    "in range",
+                    in_range_exp(RANGE_FROM, RANGE_TO, value) + q_a * a + instance,
+                )],
+            )
         });
 
         InRangeConfig {
-            selector,
+            selector_v,
             value,
+            a,
+            q_a,
+            instance,
             _marker: PhantomData,
         }
     }
@@ -67,9 +107,73 @@ impl<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize>
             || "assign value",
             |mut region| {
                 // enable range check
-                self.config.selector.enable(&mut region, 0)?;
+                self.config.selector_v.enable(&mut region, 0)?;
                 // assign value
                 region.assign_advice(|| "assign value", self.config.value, 0, || value)?;
+
+                region.assign_advice(
+                    || "range from",
+                    self.config.a,
+                    0,
+                    || Value::known(F::from(RANGE_FROM as u64)),
+                )?;
+                // region.assign_advice_from_instance(
+                // || "account low",
+                // self.config.instance,
+                // 0,
+                // self.config.a,
+                // 0,
+                // )?;
+                region.assign_fixed(
+                    || "fake instance",
+                    self.config.q_a,
+                    0,
+                    || Value::known(F::ONE.neg()),
+                )?;
+
+                self.config.selector_v.enable(&mut region, 1)?;
+                region.assign_advice(
+                    || "assign value fake",
+                    self.config.value,
+                    1,
+                    || Value::known(F::from(RANGE_FROM as u64)),
+                )?;
+                // self.config.selector_a.enable(&mut region, 1)?;
+                region.assign_advice_from_instance(
+                    || "account low",
+                    self.config.instance,
+                    1,
+                    self.config.a,
+                    1,
+                )?;
+                region.assign_fixed(
+                    || "account low selector",
+                    self.config.q_a,
+                    1,
+                    || Value::known(F::ONE.neg()),
+                )?;
+
+                self.config.selector_v.enable(&mut region, 2)?;
+                region.assign_advice(
+                    || "assign value fake",
+                    self.config.value,
+                    2,
+                    || Value::known(F::from(RANGE_FROM as u64)),
+                )?;
+                // self.config.selector_a.enable(&mut region, 2)?;
+                region.assign_advice_from_instance(
+                    || "account high",
+                    self.config.instance,
+                    2,
+                    self.config.a,
+                    2,
+                )?;
+                region.assign_fixed(
+                    || "account high selector",
+                    self.config.q_a,
+                    2,
+                    || Value::known(F::ONE.neg()),
+                )?;
 
                 Ok(())
             },
@@ -82,9 +186,9 @@ mod tests {
 
     use halo2_proofs::{
         circuit::SimpleFloorPlanner,
-        dev::{FailureLocation, MockProver, VerifyFailure},
-        pasta::Fp,
-        plonk::{Any, Circuit},
+        dev::MockProver,
+        halo2curves::{bn256::Fr as Fp, ff::PrimeField},
+        plonk::Circuit,
     };
 
     use super::*;
@@ -106,7 +210,8 @@ mod tests {
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
             let value = meta.advice_column();
-            InRangeChip::<F, RANGE_FROM, RANGE_TO>::configure(meta, value)
+            let instance = meta.instance_column();
+            InRangeChip::<F, RANGE_FROM, RANGE_TO>::configure(meta, value, instance)
         }
 
         fn synthesize(
@@ -120,15 +225,28 @@ mod tests {
         }
     }
 
+    type Account = [u8; 32];
+
+    fn init_public_input(required_range_from: usize, account: Account) -> [Fp; 3] {
+        [
+            Fp::from_u128(required_range_from as u128),
+            Fp::from_u128(u128::from_le_bytes(account[..16].try_into().unwrap())),
+            Fp::from_u128(u128::from_le_bytes(account[16..].try_into().unwrap())),
+        ]
+    }
+
     #[test]
     fn test_in_range() {
         let k = 4;
+        let account = [1u8; 32];
         for i in 18..119 {
             // given circuit and value in range
             let circuit = TestCircuit::<Fp, 18, 120> {
                 value: Value::known(Fp::from(i as u64)),
             };
-            let prover = MockProver::run(k, &circuit, vec![]).unwrap();
+
+            let instances = init_public_input(18, account).to_vec();
+            let prover = MockProver::run(k, &circuit, vec![instances]).unwrap();
             assert!(prover.verify().is_ok());
         }
     }
@@ -136,26 +254,15 @@ mod tests {
     #[test]
     fn test_out_of_range() {
         let k = 4;
+        let account = [1u8; 32];
         for i in 2..17 {
             // given circuit and value out of range
             let circuit = TestCircuit::<Fp, 18, 120> {
                 value: Value::known(Fp::from(i as u64)),
             };
-            let prover = MockProver::run(k, &circuit, vec![]).unwrap();
-            assert_eq!(
-                prover.verify(),
-                Err(vec![VerifyFailure::ConstraintNotSatisfied {
-                    constraint: ((0, "in range").into(), 0, "in range").into(),
-                    location: FailureLocation::InRegion {
-                        region: (0, "assign value").into(),
-                        offset: 0
-                    },
-                    cell_values: vec![(
-                        ((Any::Advice, 0).into(), 0).into(),
-                        format!("{:#x}", i).to_string()
-                    )]
-                }])
-            );
+            let instances = init_public_input(18, account).to_vec();
+            let prover = MockProver::run(k, &circuit, vec![instances]).unwrap();
+            assert!(prover.verify().is_err());
         }
     }
 }

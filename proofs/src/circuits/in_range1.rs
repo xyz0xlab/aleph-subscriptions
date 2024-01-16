@@ -9,7 +9,7 @@ use crate::chips::in_range1::{InRangeChip, InRangeConfig};
 /// Circuit for proving if value is between RANGE_FROM (inclusive) and RANGE_TO (exclusive)
 #[derive(Default)]
 pub struct InRangeCircuit<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize> {
-    value: Value<F>,
+    pub value: Value<F>,
 }
 
 impl<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize> Circuit<F>
@@ -24,7 +24,8 @@ impl<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize> Circu
 
     fn configure(meta: &mut halo2_proofs::plonk::ConstraintSystem<F>) -> Self::Config {
         let value = meta.advice_column();
-        InRangeChip::<F, RANGE_FROM, RANGE_TO>::configure(meta, value)
+        let instance = meta.instance_column();
+        InRangeChip::<F, RANGE_FROM, RANGE_TO>::configure(meta, value, instance)
     }
 
     fn synthesize(
@@ -40,19 +41,36 @@ impl<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize> Circu
 
 #[cfg(test)]
 mod tests {
-    use halo2_proofs::{circuit::Value, dev::MockProver, pasta::Fp};
 
-    use super::InRangeCircuit;
+    use halo2_proofs::{
+        circuit::Value,
+        dev::MockProver,
+        halo2curves::{bn256::Fr as Fp, ff::PrimeField},
+    };
+
+    use super::*;
+
+    type Account = [u8; 32];
+
+    fn init_public_input(required_range_from: usize, account: Account) -> [Fp; 3] {
+        [
+            Fp::from_u128(required_range_from as u128),
+            Fp::from_u128(u128::from_le_bytes(account[..16].try_into().unwrap())),
+            Fp::from_u128(u128::from_le_bytes(account[16..].try_into().unwrap())),
+        ]
+    }
 
     #[test]
     fn test_in_range() {
         let k = 4;
+        let account = [2u8; 32];
 
         for i in 18..119 {
             let circuit = InRangeCircuit::<Fp, 18, 120> {
                 value: Value::known(Fp::from(i as u64)),
             };
-            let prover = MockProver::run(k, &circuit, vec![]).unwrap();
+            let instances = init_public_input(18, account).to_vec();
+            let prover = MockProver::run(k, &circuit, vec![instances]).unwrap();
             assert!(prover.verify().is_ok());
         }
     }
@@ -60,12 +78,14 @@ mod tests {
     #[test]
     fn test_out_of_range() {
         let k = 4;
+        let account = [2u8; 32];
 
         for i in 1..17 {
             let circuit = InRangeCircuit::<Fp, 18, 120> {
                 value: Value::known(Fp::from(i as u64)),
             };
-            let prover = MockProver::run(k, &circuit, vec![]).unwrap();
+            let instances = init_public_input(18, account).to_vec();
+            let prover = MockProver::run(k, &circuit, vec![instances]).unwrap();
             assert!(prover.verify().is_err());
         }
     }
