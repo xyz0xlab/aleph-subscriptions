@@ -4,10 +4,10 @@ use halo2_proofs::{
     plonk::Circuit,
 };
 
-use crate::chips::in_range1::{InRangeChip, InRangeConfig};
+use crate::chips::in_range::{InRangeChip, InRangeConfig};
 
 /// Circuit for proving if value is between RANGE_FROM (inclusive) and RANGE_TO (exclusive)
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct InRangeCircuit<F: Field + From<u64>, const RANGE_FROM: usize, const RANGE_TO: usize> {
     pub value: Value<F>,
 }
