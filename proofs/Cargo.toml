@@ -9,6 +9,7 @@ edition = "2021"
 name = "subscription_proofs"
 path = "src/lib.rs"
 
+
 [dependencies]
 anyhow = "1.0.79"
 # halo2_proofs = "0.3.0"

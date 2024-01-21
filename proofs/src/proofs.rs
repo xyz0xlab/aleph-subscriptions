@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use anyhow::{Context, Result};
 use halo2_proofs::{
     circuit::Value,
@@ -23,7 +21,7 @@ pub type Account = [u8; 32];
 
 /// Represents all attributes required to generate and serialize zero knowledge proof
 #[derive(Debug, Clone)]
-pub struct Setup<C: Circuit<Fp> + Default + Clone> {
+pub struct Setup {
     /// Maximum polynomial degree
     pub k: u32,
     /// Proving key which allows for the creation of proofs for a given circuit
@@ -32,15 +30,13 @@ pub struct Setup<C: Circuit<Fp> + Default + Clone> {
     pub vk: VerifyingKey<G1Affine>,
     /// Trusted setup - public parameters for the polynomial commitment schema
     pub params: ParamsKZG<Bn256>,
-    /// Marker for Circuit type used to parametrize this setup
-    _marker: PhantomData<C>,
 }
 
-impl<C: Circuit<Fp> + Default + Clone> Setup<C> {
+impl Setup {
     /// Generate initial setup and
     /// params:
     /// * k - maximum polynomial degree
-    pub fn generate(k: u32) -> Result<Self> {
+    pub fn generate<C: Circuit<Fp> + Default + Clone>(k: u32) -> Result<Self> {
         let circuit = C::default();
         let params = ParamsKZG::<Bn256>::setup(k, ParamsKZG::<Bn256>::mock_rng());
         //let params = ParamsKZG::<Bn256>::setup(k, OsRng);
@@ -51,7 +47,7 @@ impl<C: Circuit<Fp> + Default + Clone> Setup<C> {
             pk,
             vk,
             params,
-            _marker: PhantomData,
+            // _marker: PhantomData,
         })
     }
 
@@ -86,7 +82,7 @@ impl<C: Circuit<Fp> + Default + Clone> Setup<C> {
     /// * buffer - serialized ZKP setup
     /// returns:
     /// * Deserialized ZKP setup or error
-    pub fn from_bytes(buffer: &mut &[u8]) -> Result<Self> {
+    pub fn from_bytes<C: Circuit<Fp> + Default + Clone>(buffer: &mut &[u8]) -> Result<Self> {
         let params =
             ParamsKZG::<Bn256>::read_custom(buffer, halo2_proofs::SerdeFormat::RawBytesUnchecked)
                 .context("failed to read ZKP params")?;
@@ -100,12 +96,13 @@ impl<C: Circuit<Fp> + Default + Clone> Setup<C> {
             vk: pk.get_vk().clone(),
             pk,
             params,
-            _marker: PhantomData,
+            // _marker: PhantomData,
         })
     }
 }
 
 const RANGE_TO: usize = 120;
+const CIRCUIT_MAX_K: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct MinAgeProof<const RANGE_FROM: usize> {}
@@ -115,12 +112,27 @@ impl<const RANGE_FROM: usize> MinAgeProof<RANGE_FROM> {
         Self {}
     }
 
-    pub fn generate(
-        &self,
-        setup: &Setup<InRangeCircuit<Fp, RANGE_FROM, RANGE_TO>>,
-        age: u64,
-        for_account: Account,
-    ) -> Result<Vec<u8>> {
+    /// Generates trusted setup for minimum age zero knowledge proof
+    pub fn generate_setup() -> Result<Setup> {
+        Setup::generate::<InRangeCircuit<Fp, RANGE_FROM, RANGE_TO>>(CIRCUIT_MAX_K)
+    }
+
+    /// Deserializes vector of bytes to the zero knowledge proof setup
+    /// params:
+    /// * buffer - serialized to byte array zero knowledge proof setup
+    /// returns:
+    /// * trusted setup for minimum age zero knowlege proof
+    pub fn load_setup(buffer: Vec<u8>) -> Result<Setup> {
+        Setup::from_bytes::<InRangeCircuit<Fp, RANGE_FROM, RANGE_TO>>(&mut buffer.as_slice())
+    }
+
+    /// Generates zero knowledge proof that proofs age to be greater than RANGE_FROM
+    /// params:
+    /// * setup - trusted setup which can be generated using `generate_setup()` function
+    /// * age - age that is a witness
+    /// * for_account - account address for which proof of age being greater than RANGE_FROM is
+    /// generated
+    pub fn generate_proof(&self, setup: &Setup, age: u64, for_account: Account) -> Result<Vec<u8>> {
         let circuit = InRangeCircuit::<Fp, RANGE_FROM, RANGE_TO> {
             value: Value::known(Fp::from(age)),
         };
@@ -164,7 +176,6 @@ mod tests {
         params: ParamsKZG<Bn256>,
     }
 
-    const CIRCUIT_MAX_K: u32 = 4;
     const REQUIRED_AGE_18: usize = 18;
     const REQUIRED_AGE_21: usize = 21;
     const ACCOUNT: [u8; 32] = [1u8; 32];
@@ -175,9 +186,9 @@ mod tests {
         for_account: Account,
     ) -> Result<TestMinAgeSetup> {
         // generate trusted setup
-        let setup = Setup::generate(CIRCUIT_MAX_K)?;
+        let setup = MinAgeProof::<REQUIRED_AGE>::generate_setup()?;
         let min_age_proof = MinAgeProof::<REQUIRED_AGE>::new();
-        let proof = min_age_proof.generate(&setup, age, for_account)?;
+        let proof = min_age_proof.generate_proof(&setup, age, for_account)?;
 
         Ok(TestMinAgeSetup {
             proof,
@@ -241,10 +252,10 @@ mod tests {
 
     #[test]
     fn test_serialization() {
-        let setup: Setup<InRangeCircuit<Fp, 18, 120>> = Setup::generate(CIRCUIT_MAX_K).unwrap();
+        let setup = Setup::generate::<InRangeCircuit<Fp, 18, 120>>(CIRCUIT_MAX_K).unwrap();
         let bs = setup.clone().to_bytes().unwrap();
-        let setup_deserialized: Setup<InRangeCircuit<Fp, 18, 120>> =
-            Setup::from_bytes(&mut bs.as_slice()).unwrap();
+        let setup_deserialized =
+            Setup::from_bytes::<InRangeCircuit<Fp, 18, 120>>(&mut bs.as_slice()).unwrap();
 
         assert_eq!(setup.k, setup_deserialized.k);
         assert_eq!(setup.params.s_g2(), setup_deserialized.params.s_g2());

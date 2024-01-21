@@ -1,7 +1,10 @@
-.PHONY: build build-proofs lint clean clean-proofs
+.PHONY: build build-proofs build-clients lint clean clean-proofs clean-clients
 
 build-proofs: ## Build zero knowledge proofs
 	cd ./proofs && cargo build --release
+
+build-clients: ## Build aleph zero chain client applications
+	cd ./subscriptions-client && cargo build --release
 
 build-contracts: ## Build smart contracts
 	cd ./contracts/subscriptions && cargo contract build --release
@@ -15,10 +18,16 @@ lint: ## Run the linter
 test-proofs: ## Run unit tests for zero knowledge proofs
 	cd ./proofs && cargo test
 
-clean: clean-proofs clean-contracts ## Clean all temporary files
+test-clients: ## Run unit tests for aleph zero chain client applications
+	cd ./subscriptions-client && cargo test
+
+clean: clean-proofs clean-clients clean-contracts ## Clean all temporary files
 
 clean-proofs: ## Clean all temporary files for the zero knowledge proofs
 	cd ./proofs && cargo clean
+
+clean-clients: ## Clean all temporary files for aleph zero client applications
+	cd ./subscriptions-client && cargo clean
 	
 clean-contracts: ## Clean all temporary files for smart contracts
 	cargo clean --manifest-path ./contracts/subscriptions/Cargo.toml
