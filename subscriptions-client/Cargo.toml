@@ -18,6 +18,8 @@ tokio = { version = "1.35.1", features = ["full"] }
 
 proofs = { path = "../proofs" }
 
+aleph_client  = { git="https://github.com/Cardinal-Cryptography/aleph-node/", features = ["liminal"]}
+
 [dev-dependencies]
 filepath = "0.1.2"
 tempfile = "3.9.0"

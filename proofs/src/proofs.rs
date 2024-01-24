@@ -132,11 +132,16 @@ impl<const RANGE_FROM: usize> MinAgeProof<RANGE_FROM> {
     /// * age - age that is a witness
     /// * for_account - account address for which proof of age being greater than RANGE_FROM is
     /// generated
-    pub fn generate_proof(&self, setup: &Setup, age: u64, for_account: Account) -> Result<Vec<u8>> {
+    pub fn generate_proof(
+        &self,
+        setup: &Setup,
+        age: u64,
+        for_account: &Account,
+    ) -> Result<Vec<u8>> {
         let circuit = InRangeCircuit::<Fp, RANGE_FROM, RANGE_TO> {
             value: Value::known(Fp::from(age)),
         };
-        let instances = self.public_input(for_account);
+        let instances = self.public_input(for_account.clone());
 
         let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
         create_proof::<_, ProverGWC<'_, Bn256>, _, _, _, _>(
@@ -188,7 +193,7 @@ mod tests {
         // generate trusted setup
         let setup = MinAgeProof::<REQUIRED_AGE>::generate_setup()?;
         let min_age_proof = MinAgeProof::<REQUIRED_AGE>::new();
-        let proof = min_age_proof.generate_proof(&setup, age, for_account)?;
+        let proof = min_age_proof.generate_proof(&setup, age, &for_account)?;
 
         Ok(TestMinAgeSetup {
             proof,
