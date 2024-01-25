@@ -1,4 +1,4 @@
-.PHONY: build build-proofs build-clients lint clean clean-proofs clean-clients
+.PHONY: build build-proofs build-clients lint clean clean-proofs clean-clients test test-proofs test-clients test-contracts
 
 build-proofs: ## Build zero knowledge proofs
 	cd ./proofs && cargo build --release
@@ -20,6 +20,11 @@ test-proofs: ## Run unit tests for zero knowledge proofs
 
 test-clients: ## Run unit tests for aleph zero chain client applications
 	cd ./subscriptions-client && cargo test
+
+test-contracts: ## Run unit tests for smart contracts
+	cd ./contracts/subscriptions && cargo test
+
+test: test-proofs test-clients test-contracts ## Run all unit tests
 
 clean: clean-proofs clean-clients clean-contracts ## Clean all temporary files
 
