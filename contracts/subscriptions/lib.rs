@@ -78,6 +78,12 @@ mod subscriptions {
         subscriptions: Mapping<AccountId, Subscription>,
         /// List of active subscriptions
         active_subscriptions: Vec<AccountId>,
+
+        /// Hash of verification key used for zero knowledge proof verification
+        proof_vk: Hash,
+        /// Minimum required age to be allowed to setup subscription
+        /// Used for zero knowledge proof verification
+        proof_min_required_age: u128,
     }
 
     /// Errors returned by this smart contract
@@ -102,6 +108,11 @@ mod subscriptions {
         InconsistentSubscriptionData(AccountId),
         /// Ink! error can be converted to this smart contract errors
         InkEnvFailure(String),
+
+        /// Returned when caller's address can't be used as ZKP proof public input
+        ProofCallerAddressNotSerializable,
+        /// Returned when caller's proof is invalid
+        InvalidProofForMinAgeRequired,
     }
 
     /// Converts ink::env::Error to this smart contract error
@@ -142,13 +153,19 @@ mod subscriptions {
         /// Only the owner can start payment settlement and transfer an ownership.
         /// Parameters:
         /// * `price_per_block` - price the subscriber needs to pay for the number of blocks translated to the payment interval.
+        /// * `proof_vk` - verification key hash used for zero knowledge proof verification. Must
+        /// be registered in aleph chain's `VkStorage` pallete
+        /// * `proof_min_required_age` - minimum required age to proof the rights to setup new
+        /// subscription
         #[ink(constructor)]
-        pub fn new(price_per_block: Balance) -> Self {
+        pub fn new(price_per_block: Balance, proof_vk: Hash, proof_min_required_age: u128) -> Self {
             Self {
                 owner: Self::env().caller(),
                 price_per_block,
                 subscriptions: Mapping::default(),
                 active_subscriptions: Vec::default(),
+                proof_vk,
+                proof_min_required_age,
             }
         }
 
@@ -157,6 +174,7 @@ mod subscriptions {
         /// * payment_interval - one of week|month
         /// * intervals_to_pay - number of paid intervales declared by the caller
         /// * external_channel_handle_id - external identifier, specific for the external channel, used by the notification service
+        /// * proof - zero knowledge proof to verify what is required to add a new subscription
         /// Events:
         /// * NewSubscription
         /// Fails:
@@ -169,6 +187,7 @@ mod subscriptions {
             payment_interval: PaymentInterval,
             intervals_to_pay: u32,
             external_channel_handle: String,
+            proof: Vec<u8>,
         ) -> Result<(), Error> {
             let caller = self.env().caller();
             // if caller is already subscribed
@@ -178,6 +197,9 @@ mod subscriptions {
 
             self.validate_intervals_to_pay(intervals_to_pay)?;
             self.validate_channel_handle(&external_channel_handle)?;
+
+            // verify zero knowlege proof
+            self.verify_proof(proof)?;
 
             // create new subscription record
             let curr_block = self.env().block_number();
@@ -449,13 +471,55 @@ mod subscriptions {
                 panic!("failed to reimburse the caller")
             }
         }
+
+        /// Verifies zero knowledge proof as provided by user
+        fn verify_proof(&self, proof: Vec<u8>) -> Result<(), Error> {
+            let vk_hash = baby_liminal_extension::KeyHash::from_slice(self.proof_vk.as_ref());
+            self.env()
+                .extension()
+                .verify(vk_hash, proof, self.proof_public_inputs()?)
+                .map_err(|_| Error::InvalidProofForMinAgeRequired)
+        }
+
+        /// Generates zero knowledge proof public inputs.
+        /// Caller's address is used as one of the inputs.
+        fn proof_public_inputs(&self) -> Result<Vec<u8>, Error> {
+            let mut inputs = Vec::<u8>::new();
+            // first input is a minimum required age
+            inputs.extend(self.proof_min_required_age.to_le_bytes());
+            // Finite field (Fr) elements are 256-bit so we need to pad with zero
+            inputs.extend([0u8; 16]);
+            // second input is caller's address in two 128-bit chunks
+            let caller = self.env().caller();
+            let bs: &[u8; 32] = caller.as_ref();
+            inputs.extend(
+                u128::from_le_bytes(
+                    bs[..16]
+                        .try_into()
+                        .map_err(|_| Error::ProofCallerAddressNotSerializable)?,
+                )
+                .to_le_bytes(),
+            );
+            inputs.extend([0u8; 16]);
+            inputs.extend(
+                u128::from_le_bytes(
+                    bs[16..]
+                        .try_into()
+                        .map_err(|_| Error::ProofCallerAddressNotSerializable)?,
+                )
+                .to_le_bytes(),
+            );
+            inputs.extend([0u8; 16]);
+
+            Ok(inputs)
+        }
     }
 
     #[cfg(test)]
     mod tests {
         use ink::{
             env::test::{recorded_events, EmittedEvent},
-            // reflect::ContractEventBase,
+            primitives::Hash,
             scale::Decode as _,
         };
 
@@ -464,17 +528,49 @@ mod subscriptions {
 
         pub const ONE_TOKEN: Balance = 1_000_000_000_000;
         pub const ONE_WEEK_TOKENS: Balance = 604_800;
+        pub const PROOF_VK_HASH: [u8; 32] = [0u8; 32];
+        pub const MIN_REQUIRED_AGE: u128 = 18;
 
-        // Alias for wrapper around all events in this smart contract generated by ink!
-        // type Event = <Subscriptions as ContractEventBase>::Type;
+        /// Mocks baby_liminal_extension
+        struct MockZKPVerifier {
+            /// Should be one of baby_liminal_extension::status_codes
+            expected_result: u32,
+        }
+
+        impl MockZKPVerifier {
+            pub fn new(expected_result: u32) -> Self {
+                Self { expected_result }
+            }
+        }
+
+        impl ink::env::test::ChainExtension for MockZKPVerifier {
+            fn ext_id(&self) -> u16 {
+                baby_liminal_extension::extension_ids::EXTENSION_ID
+            }
+
+            fn call(&mut self, func_id: u16, _input: &[u8], _output: &mut Vec<u8>) -> u32 {
+                assert_eq!(
+                    func_id,
+                    baby_liminal_extension::extension_ids::VERIFY_FUNC_ID
+                );
+                self.expected_result
+            }
+        }
 
         /// We test a simple use case of our contract.
         #[ink::test]
         fn it_works() {
+            // register baby liminal extension, used for zero knowlege proof verification
+            ink::env::test::register_chain_extension(MockZKPVerifier::new(
+                baby_liminal_extension::status_codes::VERIFY_SUCCESS,
+            ));
+            let proof = vec![0u8; 60];
+
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
             ink::env::test::set_account_balance::<ink::env::DefaultEnvironment>(accounts.bob, 0);
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-            let mut subscriptions = Subscriptions::new(1u128);
+            let mut subscriptions =
+                Subscriptions::new(1u128, Hash::from(PROOF_VK_HASH), MIN_REQUIRED_AGE);
 
             assert_eq!(&subscriptions.owner, &accounts.bob);
             assert_eq!(subscriptions.price_per_block, 1u128);
@@ -488,7 +584,7 @@ mod subscriptions {
             ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(ONE_TOKEN);
             // add subscription
             subscriptions
-                .add_subscription(PaymentInterval::Week, 1, "1111".to_string())
+                .add_subscription(PaymentInterval::Week, 1, "1111".to_string(), proof)
                 .unwrap();
             assert!(subscriptions.subscriptions.contains(accounts.charlie));
             assert!(subscriptions
@@ -516,12 +612,36 @@ mod subscriptions {
         }
 
         #[ink::test]
+        fn proof_verification_fails() {
+            // register baby liminal extension, used for zero knowlege proof verification
+            ink::env::test::register_chain_extension(MockZKPVerifier::new(
+                baby_liminal_extension::status_codes::VERIFY_VERIFICATION_FAIL,
+            ));
+            let proof = vec![0u8; 60];
+
+            let mut subscriptions =
+                Subscriptions::new(0u128, Hash::from(PROOF_VK_HASH), MIN_REQUIRED_AGE);
+
+            // add subscription failes becase of failed verification
+            assert!(subscriptions
+                .add_subscription(PaymentInterval::Week, 1, "1111".to_string(), proof)
+                .is_err());
+        }
+
+        #[ink::test]
         fn cancel_subscription_works() {
+            // register baby liminal extension, used for zero knowlege proof verification
+            ink::env::test::register_chain_extension(MockZKPVerifier::new(
+                baby_liminal_extension::status_codes::VERIFY_SUCCESS,
+            ));
+            let proof = vec![0u8; 60];
+
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
             // setup Bob as a contract owner
             ink::env::test::set_account_balance::<ink::env::DefaultEnvironment>(accounts.bob, 0);
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-            let mut subscriptions = Subscriptions::new(1u128);
+            let mut subscriptions =
+                Subscriptions::new(1u128, Hash::from(PROOF_VK_HASH), MIN_REQUIRED_AGE);
 
             // prepare balance for the Charlie as the contract caller
             ink::env::test::set_account_balance::<ink::env::DefaultEnvironment>(
@@ -532,7 +652,7 @@ mod subscriptions {
             ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(ONE_TOKEN);
             // add subscription
             subscriptions
-                .add_subscription(PaymentInterval::Week, 1, "1111".to_string())
+                .add_subscription(PaymentInterval::Week, 1, "1111".to_string(), proof)
                 .unwrap();
             assert!(subscriptions.subscriptions.contains(accounts.charlie));
             assert!(subscriptions
@@ -563,8 +683,15 @@ mod subscriptions {
 
         #[ink::test]
         fn get_active_subscriptions_works() {
+            // register baby liminal extension, used for zero knowlege proof verification
+            ink::env::test::register_chain_extension(MockZKPVerifier::new(
+                baby_liminal_extension::status_codes::VERIFY_SUCCESS,
+            ));
+            let proof = vec![0u8; 60];
+
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-            let mut subscriptions = Subscriptions::new(0u128);
+            let mut subscriptions =
+                Subscriptions::new(0u128, Hash::from(PROOF_VK_HASH), MIN_REQUIRED_AGE);
 
             // prepare balance for the Charlie as the contract caller
             ink::env::test::set_account_balance::<ink::env::DefaultEnvironment>(
@@ -575,7 +702,7 @@ mod subscriptions {
             ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(ONE_TOKEN);
             // add subscription
             subscriptions
-                .add_subscription(PaymentInterval::Week, 1, "1111".to_string())
+                .add_subscription(PaymentInterval::Week, 1, "1111".to_string(), proof)
                 .unwrap();
             assert!(subscriptions.subscriptions.contains(accounts.charlie));
             assert!(subscriptions
@@ -594,8 +721,15 @@ mod subscriptions {
 
         #[ink::test]
         fn payment_settlement_works() {
+            // register baby liminal extension, used for zero knowlege proof verification
+            ink::env::test::register_chain_extension(MockZKPVerifier::new(
+                baby_liminal_extension::status_codes::VERIFY_SUCCESS,
+            ));
+            let proof = vec![0u8; 60];
+
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-            let mut subscriptions = Subscriptions::new(1u128);
+            let mut subscriptions =
+                Subscriptions::new(1u128, Hash::from(PROOF_VK_HASH), MIN_REQUIRED_AGE);
 
             // register subscription for Bob
             ink::env::test::set_account_balance::<ink::env::DefaultEnvironment>(
@@ -605,7 +739,7 @@ mod subscriptions {
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
             ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(ONE_TOKEN);
             subscriptions
-                .add_subscription(PaymentInterval::Week, 2, "1111".to_string())
+                .add_subscription(PaymentInterval::Week, 2, "1111".to_string(), proof.clone())
                 .unwrap();
             // register subscription for Charlie
             ink::env::test::set_account_balance::<ink::env::DefaultEnvironment>(
@@ -616,7 +750,7 @@ mod subscriptions {
             ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(ONE_TOKEN);
             // add subscription
             subscriptions
-                .add_subscription(PaymentInterval::Week, 3, "2222".to_string())
+                .add_subscription(PaymentInterval::Week, 3, "2222".to_string(), proof)
                 .unwrap();
 
             assert!(subscriptions.subscriptions.contains(accounts.bob));
@@ -720,8 +854,14 @@ mod subscriptions {
         #[ink::test]
         fn only_owner_allowed_to_transfer_ownership() {
             // given
+            // register baby liminal extension, used for zero knowlege proof verification
+            ink::env::test::register_chain_extension(MockZKPVerifier::new(
+                baby_liminal_extension::status_codes::VERIFY_SUCCESS,
+            ));
+
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-            let mut subscriptions = Subscriptions::new(1u128);
+            let mut subscriptions =
+                Subscriptions::new(1u128, Hash::from(PROOF_VK_HASH), MIN_REQUIRED_AGE);
             assert_eq!(subscriptions.owner, accounts.alice);
 
             // transfer ownership to bob
@@ -741,36 +881,12 @@ mod subscriptions {
                 decoded_event.external_channel_handle,
                 expected_external_channel_handle.into_bytes()
             );
-            // let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
-            // .expect("invalid event buffer");
-            // if let Event::NewSubscription(NewSubscription {
-            // for_account,
-            // external_channel_handle,
-            // }) = decoded_event
-            // {
-            // assert_eq!(for_account, expected_for_account);
-            // assert_eq!(
-            // external_channel_handle,
-            // expected_external_channel_handle.into_bytes()
-            // );
-            // } else {
-            // panic!("unexpected event kind: expected NewSubcription event")
-            // }
         }
 
         fn assert_cancelled_subscription(event: &EmittedEvent, expected_for_account: AccountId) {
             let decoded_event = <CancelledSubscription>::decode(&mut &event.data[..])
                 .expect("invalid event buufer");
             assert_eq!(decoded_event.for_account, expected_for_account);
-            // let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
-            // .expect("invalid event buffer");
-            // if let Event::CancelledSubscription(CancelledSubscription { for_account }) =
-            // decoded_event
-            // {
-            // assert_eq!(for_account, expected_for_account);
-            // } else {
-            // panic!("unexpected event kind: expected CancelSubscription event")
-            // }
         }
 
         fn assert_cancelled_subscriptions(
@@ -780,15 +896,6 @@ mod subscriptions {
             let decoded_event = <CancelledSubscriptions>::decode(&mut &event.data[..])
                 .expect("invalid event buffer");
             assert_eq!(decoded_event.for_accounts, expected_for_accounts);
-            // let decoded_event = <Event as scale::Decode>::decode(&mut &event.data[..])
-            // .expect("invalid event buffer");
-            // if let Event::CancelledSubscriptions(CancelledSubscriptions { for_accounts }) =
-            // decoded_event
-            // {
-            // assert_eq!(for_accounts, expected_for_accounts);
-            // } else {
-            // panic!("unexpected event kind: expected CancelSubscriptions event")
-            // }
         }
     }
 }
