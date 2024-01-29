@@ -1,7 +1,10 @@
 use std::path::Path;
 
-use aleph_client::{pallets::vk_storage::VkStorageUserApi, Connection, SignedConnection};
-use anyhow::{bail, Context, Result};
+use aleph_client::{
+    pallets::vk_storage::VkStorageUserApi, sp_core::Hasher, BlakeTwo256, Connection,
+    SignedConnection,
+};
+use anyhow::{bail, Context, Ok, Result};
 use subscription_proofs::proofs::{MinAgeProof, Setup};
 
 /// Provides commands to generate trusted setup and min age zero knowledge proof
@@ -65,30 +68,45 @@ impl<const REQUIRED_AGE: usize> MinAgeProofOps<REQUIRED_AGE> {
         Ok(())
     }
 
+    /// Loads zero knowledge proof stored under a given path
+    /// params:
+    /// * path - a path where zero knwoeledge proof is stored
+    /// returns:
+    /// * - binary array representing the proof
+    pub async fn load_proof(&self, path: &Path) -> Result<Vec<u8>> {
+        let bs = std::fs::read(path).context("failed to read ZKP proof from file")?;
+        Ok(bs)
+    }
+
     /// Registers a verification key in the aleph network's `VkStorage` pallet.
     /// Pallet is used for storing a map of verification key hash to verification key
     /// The register is charged for the storage.
     /// params:
     /// * conn - a connection to the aleph zero network
     /// * seed - a seed of a caller that signs aleph network transaction
-    pub async fn register_vk(&self, conn: Connection, seed: &str) -> Result<()> {
+    /// returns:
+    /// * hash of the verification key serialized to string
+    pub async fn register_vk(&self, conn: Connection, seed: &str) -> Result<String> {
         let keypair = aleph_client::keypair_from_string(seed);
         let signed_conn = SignedConnection::from_connection(conn, keypair);
 
         match &self.setup {
             Some(setup) => {
                 let vk_bs = setup.vk_to_bytes();
+                log::info!("Verification key bytes: {:?}", vk_bs.len());
+                let vk_hash = BlakeTwo256::hash(&vk_bs);
+
                 let tx_info = signed_conn
                     .store_key(vk_bs, aleph_client::TxStatus::Finalized)
                     .await
                     .context("failed to register verification key on aleph chain")?;
-                log::debug!("Verification key registration tx info: {:?}", tx_info);
+                log::info!("Verification key registration tx info: {:?}", tx_info);
+                Ok(format!("{:?}", vk_hash))
             }
             None => {
                 bail!("Missing trusted setup");
             }
         }
-        Ok(())
     }
 }
 

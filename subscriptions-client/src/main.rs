@@ -4,9 +4,11 @@ use clap::Parser;
 use cli::{Cli, Commands};
 use env_logger::Env;
 use min_age_proof_ops::MinAgeProofOps;
+use subscription_contract_ops::SubscriptionContractOps;
 
 mod cli;
 mod min_age_proof_ops;
+mod subscription_contract_ops;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,8 +42,36 @@ async fn main() -> Result<()> {
             let mut proof_ops = MinAgeProofOps::<18>::new();
             proof_ops.load_setup(&setup_path).await?;
             let aleph_conn = Connection::new(&node_address).await;
-            proof_ops.register_vk(aleph_conn, &seed).await?;
-            log::info!("Verification key registered on aleph chain");
+            let vk_hash = proof_ops.register_vk(aleph_conn, &seed).await?;
+            log::info!(
+                "Verification key registered on aleph chain with hash: {}",
+                vk_hash
+            );
+        }
+        Commands::AddSubscription {
+            node_address,
+            contract_account,
+            contract_metadata,
+            proof_path,
+            seed,
+            payment_interval,
+            intervals,
+            external_channel_handle,
+        } => {
+            let proof_ops = MinAgeProofOps::<18>::new();
+            let proof = proof_ops.load_proof(&proof_path).await?;
+            let contract_ops =
+                SubscriptionContractOps::new(contract_account, &node_address, &contract_metadata)?;
+            log::info!("Calling subscription smart contract");
+            contract_ops
+                .add_subscription(
+                    &seed,
+                    &payment_interval,
+                    intervals,
+                    &external_channel_handle,
+                    proof,
+                )
+                .await?;
         }
     }
 

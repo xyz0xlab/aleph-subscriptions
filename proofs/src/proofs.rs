@@ -42,13 +42,7 @@ impl Setup {
         //let params = ParamsKZG::<Bn256>::setup(k, OsRng);
         let vk = keygen_vk(&params, &circuit).context("vk generation failed")?;
         let pk = keygen_pk(&params, vk.clone(), &circuit).context("pk generation failed")?;
-        Ok(Self {
-            k,
-            pk,
-            vk,
-            params,
-            // _marker: PhantomData,
-        })
+        Ok(Self { k, pk, vk, params })
     }
 
     /// Serializes ZKP params and prooving key to array of bytes
@@ -70,10 +64,12 @@ impl Setup {
     pub fn vk_to_bytes(&self) -> Vec<u8> {
         let mut buffer = vec![];
         buffer.extend(self.k.to_le_bytes());
+        println!("vk buffer size 1: {}", buffer.len());
         buffer.extend(
             self.vk
                 .to_bytes(halo2_proofs::SerdeFormat::RawBytesUnchecked),
         );
+        println!("vk buffer size 2: {}", buffer.len());
         buffer
     }
 
@@ -91,18 +87,18 @@ impl Setup {
             halo2_proofs::SerdeFormat::RawBytesUnchecked,
         )
         .context("failed to read proving key")?;
+        let vk = pk.get_vk().clone();
         Ok(Self {
             k: params.k(),
-            vk: pk.get_vk().clone(),
             pk,
+            vk,
             params,
-            // _marker: PhantomData,
         })
     }
 }
 
 const RANGE_TO: usize = 120;
-const CIRCUIT_MAX_K: u32 = 4;
+const CIRCUIT_MAX_K: u32 = 5;
 
 #[derive(Debug, Clone)]
 pub struct MinAgeProof<const RANGE_FROM: usize> {}

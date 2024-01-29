@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use aleph_client::AccountId;
 use clap::{Parser, Subcommand};
 
 /// Utilities to interact with Aleph Zero chain, especially:
@@ -59,6 +60,44 @@ pub enum Commands {
         /// chain
         #[arg(long, value_name = "Seed of an account registering verification key")]
         seed: String,
+    },
+
+    /// Call subscriptions smart contract and register subscription that requires zero knowledge
+    /// proof for minimum required age
+    AddSubscription {
+        /// Webservice endpoint process of the Aleph Zero node
+        #[arg(short = 'n', long, default_value = "ws://localhost:9944")]
+        node_address: String,
+
+        /// On chain account id of the subscription smart contract
+        #[arg(short = 'c', long, value_name = "AccountId")]
+        contract_account: AccountId,
+
+        /// Path to subscription smart contract metadata file
+        #[arg(short='m', long, value_name = "Path", value_parser=parsing::parse_path)]
+        contract_metadata: PathBuf,
+
+        /// Path to a file with binary proof
+        #[arg(short='p', long, default_value="proof.dat", value_parser = parsing::parse_path)]
+        proof_path: PathBuf,
+
+        /// Seed of an account requesting new subscription. The provided proof must be generated
+        /// for account defined by a given seed
+        #[arg(long, value_name = "Seed of an account requesting a new subscription")]
+        seed: String,
+
+        /// Subscription payment interval: Week|Month
+        #[arg(long, default_value = "Week", value_name = "Week|Month")]
+        payment_interval: String,
+
+        /// Subscription number of intervals: must be > 0
+        #[arg(long, default_value = "1", value_name = "u32")]
+        intervals: u32,
+
+        /// Subscription for notifications requires external channel handle, e.g. Telegram channel
+        /// id
+        #[arg(long, default_value = "chat_id:123456", value_name = "String")]
+        external_channel_handle: String,
     },
 }
 
